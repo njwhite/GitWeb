@@ -25,6 +25,7 @@ import socket
 import logging
 import subprocess
 import subprocessio
+import zlib
 from webob import Request, Response, exc
 
 log = logging.getLogger(__name__)
@@ -53,6 +54,28 @@ class FileWrapper(object):
     def __repr__(self):
         return '<FileWrapper %s len: %s, read: %s>' % (
                 self.fd, self.content_length, self.content_length - self.keep)
+
+class GzipWrapper(object):
+    def __init__(self, fd):
+        self.fd = fd
+        self.decompressor = zlib.decompressobj(zlib.MAX_WBITS | 32)
+
+    def read(self, size):
+        tail = self.decompressor.unconsumed_tail
+
+        if tail is None:
+            data = self.fd.read(size)
+        else:
+            read = self.fd.read(size - len(tail))
+            if read is None:
+                data = tail
+            else:
+                data = tail + read
+
+        if data is None:
+            return None
+        else:
+            return self.decompressor.decompress(data, size)
 
 class GitRepository(object):
     git_folder_signature = set(['config', 'head', 'info', 'objects', 'refs'])
@@ -106,6 +129,9 @@ class GitRepository(object):
             inputstream = FileWrapper(environ['wsgi.input'], request.content_length)
         else:
             inputstream = environ['wsgi.input']
+
+        if environ.get('HTTP_CONTENT_ENCODING', None) == 'gzip':
+            inputstream = GzipWrapper(inputstream)
 
         try:
             out = subprocessio.SubprocessIOChunker(
